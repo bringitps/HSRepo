@@ -1,0 +1,364 @@
+/**
+ * Module Description
+ * 
+ * Version    Date            Author           Remarks
+ * 1.00       16 Jan 2017     seko
+ *
+ */
+
+
+function reportLoadForm(request, response)
+{
+	try
+	{
+		if (request.getMethod() == 'GET') 
+		{
+			var form = nlapiCreateForm('Fill In Rate Report');	
+			
+			var warningMessage = form.addField('custpage_warnmessage', 'inlinehtml', null, null, null);
+			warningMessage.setDefaultValue("<div id='div__warnmsg' align='center'></div><script>showAlertBox('div__warnmsg', 'Warning', 'Please be careful selecting a Date Range.</br>There is a NetSuite restriction on the number of records to fetch.</br></br> Building CSV report could take up to 5 minutes depending on quantity of Orders.', NLAlertDialog.TYPE_MEDIUM_PRIORITY,  '100%', null, null, null);</script></div>");				
+						
+			// Save Script URL to Reset Button
+			var scriptUrlValue = request.getURL() + '?';
+			var params = request.getAllParameters();
+			for ( param in params )
+			{
+				scriptUrlValue += param + '=' + params[param] + '&';
+			}
+			
+			var scriptUrlField = form.addField('custpage_scripturl', 'text', 'Script URL').setDisplayType('hidden');
+			scriptUrlField.setDefaultValue(scriptUrlValue);		
+			
+			//POST Button
+			form.addSubmitButton('Get CSV Report');
+	
+			//adding From date
+			form.addField('custpage_fromdate', 'date', 'From Date').setMandatory( true );
+			
+			//adding To date
+			form.addField('custpage_todate', 'date', 'To Date').setMandatory( true );
+
+			//adding Reset Page Button
+			form.addButton('custpage_resetpage','Reset form','javascript:window.location.href=\'' + scriptUrlValue + '\';');
+					
+			response.writePage(form);
+		}else{
+			
+			var form = nlapiCreateForm('Fill In Rate Report');
+			
+			var scriptUrlValue =  request.getParameter('custpage_scripturl');
+			var scriptUrlField = form.addField('custpage_scripturl', 'text', 'Script URL').setDisplayType('hidden');
+			scriptUrlField.setDefaultValue(scriptUrlValue);		
+			
+			//adding Reset Page Button
+			form.addButton('custpage_resetpage','Reset form','javascript:window.location.href=\'' + scriptUrlValue + '\';');
+			var fromDate = new Date(request.getParameter('custpage_fromdate'));
+			var toDate = new Date(request.getParameter('custpage_todate'));
+			
+			/*
+			 * Functions to get the ItemFulfillment information per each SO
+			 * by Edgar Beltran
+			 * Jan 2017
+			 * */
+			var srSalesOrderFulfillmentDetails = new Array();
+			getSalesOrderFulfillmentDetails(srSalesOrderFulfillmentDetails, -1, fromDate,toDate);
+			
+			var soFulfillmentDetailsSalesOrderIdMtx = new Array();
+			var soFulfillmentDetailsFirstIFIdMtx = new Array();
+			var soFulfillmentDetailsFirstIFDateMtx = new Array();
+			var soFulfillmentDetailsTotalIFMtx = new Array();
+			
+			for(var i=0; notEmpty(srSalesOrderFulfillmentDetails) && i<srSalesOrderFulfillmentDetails.length; i++)
+			{
+				for(var j=0; notEmpty(srSalesOrderFulfillmentDetails[i]) && j<srSalesOrderFulfillmentDetails[i].length; j++)
+				{
+					var soFulfillmentDetailsIndex = soFulfillmentDetailsSalesOrderIdMtx.indexOf(srSalesOrderFulfillmentDetails[i][j].getValue('internalid', null, 'group'));
+					
+					if(soFulfillmentDetailsIndex == -1)
+					{	
+						soFulfillmentDetailsSalesOrderIdMtx.push(srSalesOrderFulfillmentDetails[i][j].getValue('internalid', null, 'group'));
+						if(notEmpty(srSalesOrderFulfillmentDetails[i][j].getValue('internalid','fulfillingtransaction', 'group')))
+						{
+							soFulfillmentDetailsFirstIFIdMtx.push(srSalesOrderFulfillmentDetails[i][j].getValue('internalid','fulfillingtransaction', 'group'));
+							soFulfillmentDetailsFirstIFDateMtx.push(srSalesOrderFulfillmentDetails[i][j].getValue('datecreated','fulfillingtransaction', 'max'));
+							soFulfillmentDetailsTotalIFMtx.push(1);
+						}
+						else
+						{
+							soFulfillmentDetailsFirstIFIdMtx.push(null);
+							soFulfillmentDetailsFirstIFDateMtx.push(null);
+							soFulfillmentDetailsTotalIFMtx.push(0);
+						}
+					}
+					else
+					{
+						if(notEmpty(srSalesOrderFulfillmentDetails[i][j].getValue('internalid','fulfillingtransaction', 'group')))
+						{
+							//NetSuite ascendently assigns ID, so the lowest is the first Item Fulfillment
+							if(soFulfillmentDetailsFirstIFIdMtx[soFulfillmentDetailsIndex] > srSalesOrderFulfillmentDetails[i][j].getValue('internalid','fulfillingtransaction', 'group')) 
+							{
+								soFulfillmentDetailsFirstIFIdMtx[soFulfillmentDetailsIndex] = srSalesOrderFulfillmentDetails[i][j].getValue('internalid','fulfillingtransaction', 'group');
+								soFulfillmentDetailsFirstIFDateMtx[soFulfillmentDetailsIndex] = srSalesOrderFulfillmentDetails[i][j].getValue('datecreated','fulfillingtransaction', 'max');
+							}
+							soFulfillmentDetailsTotalIFMtx[soFulfillmentDetailsIndex] = soFulfillmentDetailsTotalIFMtx[soFulfillmentDetailsIndex] + 1;
+						}
+					}
+				}
+			}
+
+			// End of Edgar's functions
+
+			var finalArray = new Array();
+			var range = getDates(fromDate,toDate);
+			nlapiLogExecution('debug','Days to fetch',range.length);
+			nlapiLogExecution('debug','fromDate',fromDate);
+			nlapiLogExecution('debug','toDate',toDate);
+			// 1. Get the unique SO's for the time frame selected.
+			var filters = new Array();
+			filters.push(new nlobjSearchFilter('status', null, 'anyOf', ['SalesOrd:D','SalesOrd:E','SalesOrd:F','SalesOrd:G','SalesOrd:H']));
+			filters.push(new nlobjSearchFilter('shipdate', null, 'within', fromDate, toDate));
+			filters.push(new nlobjSearchFilter('mainline', null, 'is', 'T'));
+			filters.push(new nlobjSearchFilter('taxline', null, 'is', 'F'));
+			var columns = new Array();
+			columns[0]= new nlobjSearchColumn('internalid');
+		    columns[1]= new nlobjSearchColumn('shipdate').setSort(true);
+
+			
+			var uniqueSOs = new Array();
+			var savedsearch= nlapiCreateSearch('salesorder', filters, columns);
+			var resultset = savedsearch.runSearch();
+			var searchid = 0;
+			do {
+			    var resultslice = resultset.getResults( searchid, searchid+1000 );
+			    for (var rs in resultslice) {
+			    	uniqueSOs.push( resultslice[rs] );
+			        searchid++;
+			    }
+			} while (resultslice.length >= 1000);
+			
+			nlapiLogExecution('DEBUG', 'Total of Orders fulfilled: ', uniqueSOs.length); 
+			
+			// 2. Lets get the SO with the details to flag the ones that had a back order.
+			var soFilter = new Array();
+				soFilter.push(new nlobjSearchFilter('status', null, 'anyOf', ['SalesOrd:D','SalesOrd:E','SalesOrd:F','SalesOrd:G','SalesOrd:H']));
+			    soFilter.push(new nlobjSearchFilter('shipdate', null, 'within', fromDate, toDate));
+				soFilter.push(new nlobjSearchFilter('mainline', null, 'is', 'F'));
+				soFilter.push(new nlobjSearchFilter('taxline', null, 'is', 'F'));
+
+			var soColumn = new Array();
+				soColumn[0]=new nlobjSearchColumn('internalid');
+				soColumn[1]=new nlobjSearchColumn('status');
+		        soColumn[2]=new nlobjSearchColumn('shipdate').setSort(true);
+		        soColumn[3]=new nlobjSearchColumn('line');
+		        soColumn[4]=new nlobjSearchColumn('quantity');
+			    soColumn[5]=new nlobjSearchColumn('quantityshiprecv');
+			    
+			var soDetails = new Array();
+			var savedsearch= nlapiCreateSearch('salesorder', soFilter, soColumn);
+			var resultset = savedsearch.runSearch();
+			var searchid = 0;
+			do {
+			    var resultslice = resultset.getResults( searchid, searchid+1000 );
+			    for (var rs in resultslice) {
+			    	soDetails.push( resultslice[rs] );
+			        searchid++;
+			    }
+			} while (resultslice.length >= 1000);
+			
+			var results = new Array();
+			
+			// 3. Get unique SO with backorder flag
+			for(var i=0; i<uniqueSOs.length; i++){
+				var row = new Object();
+				var soid = uniqueSOs[i].getValue('internalid');
+				var shipdate = uniqueSOs[i].getValue('shipdate');
+				var isBO = 0;
+				var qty = 0;
+				var qtyshiprecv = 0;
+				for (var x = 0 ; x<soDetails.length; x++){
+					if (soid == soDetails[x].getValue('internalid')){
+						qty = parseFloat(soDetails[x].getValue('quantity'));
+						qtyshiprecv = parseFloat(soDetails[x].getValue('quantityshiprecv'));
+						if((qty - qtyshiprecv)>0){
+							isBO =1;
+							break;
+						}
+					}			
+				}
+				row['shipdate']=shipdate;
+				row['soid']=soid;
+				row['backorder']=isBO;
+				// Now we check if the SO has more than one IF or not.
+				if(soFulfillmentDetailsSalesOrderIdMtx.indexOf(soid) != -1 && soFulfillmentDetailsTotalIFMtx[soFulfillmentDetailsSalesOrderIdMtx.indexOf(soid)] > 1 ){
+					row['bo_shipment']=1;
+					row['first_shipment']=0;
+				}else{
+					row['bo_shipment']=0;
+					row['first_shipment']=1;
+				}
+				results.push(row);
+				
+			}
+			
+			var totalOrders =0;
+			var total1st =0;
+			var totalNoBO_first =0;
+			var totalWithBO_first = 0;
+			var totalBO =0;
+			var totalNoBO_BO =0;
+			var totalWithBO_BO = 0;
+			
+			// 4. loop thru the range of dates to get the summary
+			for(var y = 0; y < range.length; y++){
+				var shipdate = range[y];
+				var dayOrders = 0;
+				var day1stShipment = 0;
+				var dayBOShipment = 0;
+				var dayNoBO_first = 0;
+				var dayWithBO_first = 0;
+				var dayNoBO_BO = 0;
+				var dayWithBO_BO = 0;
+				for(var i=0; i<results.length; i++){
+					var aDay = new Date(results[i].shipdate);
+					if(shipdate.getTime() === aDay.getTime()){
+						dayOrders = dayOrders + 1;
+						var bo = parseFloat(results[i].backorder);
+						day1stShipment = day1stShipment + parseFloat(results[i].first_shipment);
+						dayBOShipment = dayBOShipment + parseFloat(results[i].bo_shipment);
+						if(results[i].first_shipment>0){
+							if(results[i].backorder>0){
+								dayWithBO_first = dayWithBO_first + 1;
+							}else{
+								dayNoBO_first = dayNoBO_first + 1;
+							}
+						}else{
+							if(results[i].backorder>0){
+								dayWithBO_BO = dayWithBO_BO + 1;
+							}else{
+								dayNoBO_BO = dayNoBO_BO + 1;
+							}
+						}
+					}
+				}
+
+				var dateDetail = new Object();
+				dateDetail['shipdate']= formatDate(shipdate);
+				dateDetail['totalorders'] = dayOrders;
+				dateDetail['firstOrders'] = day1stShipment;
+				dateDetail['firstOrders_pct'] = getNum(((day1stShipment*100)/dayOrders).toFixed(2)) + "%";;
+				dateDetail['first_woBO'] = dayNoBO_first;
+				dateDetail['first_woBO_pct'] = getNum(((dayNoBO_first*100)/day1stShipment).toFixed(2)) + "%";
+				dateDetail['first_wBO'] = dayWithBO_first;
+				dateDetail['first_wBO_pct'] = getNum(((dayWithBO_first*100)/day1stShipment).toFixed(2)) + "%";
+				
+				dateDetail['boOrders'] = dayBOShipment;
+				dateDetail['boOrders_pct'] = getNum(((dayBOShipment*100)/dayOrders).toFixed(2)) + "%";;
+				dateDetail['bo_woBO'] = dayNoBO_BO;
+				dateDetail['bo_woBO_pct'] = getNum(((dayNoBO_BO*100)/dayBOShipment).toFixed(2)) + "%";
+				dateDetail['bo_wBO'] = dayWithBO_BO;
+				dateDetail['bo_wBO_pct'] = getNum(((dayWithBO_BO*100)/dayBOShipment).toFixed(2)) + "%";
+				finalArray.push(dateDetail);
+				totalOrders = totalOrders + dayOrders;
+				total1st = total1st + day1stShipment;
+				totalNoBO_first = totalNoBO_first + dayNoBO_first;
+				totalWithBO_first = totalWithBO_first + dayWithBO_first;	
+				totalBO = totalBO + dayBOShipment;
+				totalNoBO_BO = totalNoBO_BO + dayNoBO_BO;
+				totalWithBO_BO = totalWithBO_BO + dayWithBO_BO;
+			}
+			 
+			// 5. Create CSV with Summary
+			var csvHeader = 'Ship Date,Total Orders,1st Shipment Orders,%,w/o B/O, %, w B/O,%,BackOrder Shipment Orders,%, w/o B/O, %, w B/O,%\n';
+			var csvContent = '';
+			var csvFooter = 'Totals,'+totalOrders+','+total1st+','+getNum(((total1st*100)/totalOrders).toFixed(2))+ '%'+','+totalNoBO_first+','+getNum(((totalNoBO_first*100)/total1st).toFixed(2)) + '%'+','+totalWithBO_first+','+getNum(((totalWithBO_first*100)/total1st).toFixed(2)) + '%'+','+totalBO+','+getNum(((totalBO*100)/totalOrders).toFixed(2))+ '%'+','+totalNoBO_BO+','+getNum(((totalNoBO_BO*100)/totalBO).toFixed(2)) + '%'+','+totalWithBO_BO+','+getNum(((totalWithBO_BO*100)/totalBO).toFixed(2)) + '%\n';
+			nlapiLogExecution('debug','Total finalArray length',finalArray.length);
+			for(var i=0; i<finalArray.length; i++){
+				csvContent += finalArray[i].shipdate+','+finalArray[i].totalorders+','+finalArray[i].firstOrders+','+finalArray[i].firstOrders_pct+','+finalArray[i].first_woBO+','+finalArray[i].first_woBO_pct+','+finalArray[i].first_wBO+','+finalArray[i].first_wBO_pct+','+finalArray[i].boOrders+','+finalArray[i].boOrders_pct+','+finalArray[i].bo_woBO+','+finalArray[i].bo_woBO_pct+','+finalArray[i].bo_wBO+','+finalArray[i].bo_wBO_pct+'\n';
+			}
+			
+			
+			response.setContentType('PLAINTEXT', 'Fill_in_rate_report.csv', 'attachment');
+			var csvFileContent = csvHeader + csvContent + csvFooter;					
+			response.write(csvFileContent);
+		}
+	}
+	catch(Ex)
+	{
+        nlapiLogExecution('error', 'Unexpected Error', Ex);
+	}
+	
+}
+
+function getSalesOrderFulfillmentDetails(srArray, maxId, fromDate, toDate){
+	var salesOrderFilters = new Array();
+	if(maxId > 0) salesOrderFilters.push(new nlobjSearchFilter('internalidnumber', null, 'greaterthan', maxId));
+	salesOrderFilters.push(new nlobjSearchFilter('mainline', null, 'is', 'F'));
+	salesOrderFilters.push(new nlobjSearchFilter('status', null, 'anyOf', ['SalesOrd:D','SalesOrd:E','SalesOrd:F','SalesOrd:G','SalesOrd:H']));
+	salesOrderFilters.push(new nlobjSearchFilter('shipdate', null, 'within', fromDate, toDate));
+	
+	var salesOrderColumns = new Array();
+	salesOrderColumns.push(new nlobjSearchColumn('internalid', null, 'group').setSort());
+	salesOrderColumns.push(new nlobjSearchColumn('internalid','fulfillingtransaction', 'group'));
+	salesOrderColumns.push(new nlobjSearchColumn('tranid','fulfillingtransaction', 'max'));
+	salesOrderColumns.push(new nlobjSearchColumn('datecreated','fulfillingtransaction', 'max'));
+	
+	var srResults = nlapiSearchRecord('salesorder', null, salesOrderFilters, salesOrderColumns); 
+	
+	if(notEmpty(srResults) && srResults.length > 999)
+	{
+		//Last SO validation
+		var lastId = srResults[999].getValue('internalid', null, 'group');
+		while(srResults[srResults.length-1].getValue('internalid', null, 'group') == lastId)
+			srResults = srResults.slice(0, -1);
+		
+		srArray.push(srResults);
+		getSalesOrderFulfillmentDetails(srArray, srResults[srResults.length-1].getValue('internalid', null, 'group'),fromDate,toDate);
+	}
+	else 
+		srArray.push(srResults);
+}
+
+//--- General Javascript Functions ---//
+function getNum(val) {
+	if (isNaN(val)) {
+		return 0;
+	}
+	return val;
+}
+
+function isEmpty(val) {
+	return (val == null || val == '' || val == 'null');
+}
+
+function notEmpty(tmp) {
+	return !isEmpty(tmp);
+}
+
+function formatDate(date) {
+    var d = new Date(date);
+    var month = '' + (d.getMonth() + 1);
+    var day = '' + d.getDate();
+    var year = d.getFullYear();
+
+    if (month.length < 2) month = '0' + month;
+    if (day.length < 2) day = '0' + day;
+
+    return [year, month, day].join('-');
+}
+
+function getDates(startDate, stopDate) {
+    var dateArray = new Array();
+    var currentDate = startDate;
+    while (currentDate <= stopDate) {
+        dateArray.push( new Date (currentDate) );
+        currentDate = addDays(currentDate,1);
+    }
+    return dateArray;
+}
+
+function addDays(date, days) {
+    var result = new Date(date);
+    result.setDate(result.getDate() + days);
+    return result;
+}
+
